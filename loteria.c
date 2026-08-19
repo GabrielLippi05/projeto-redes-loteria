@@ -1,24 +1,28 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <locale.h>
 #include <time.h>
 #include "loteria.h"
 
-// Define a semente aleatória com base no relógio do sistema
+
 void inicializador_gerador()
 {
-    srand(time(NULL));
+    srand(time(NULL)); /*gera uma seed aleatoria, cada seed possui uma sequencia 
+                       diferente de numeros aleatorios, ou seja, a seed 123, tera
+                       uma sequencia 51 - 42 - 12 - 02..., uma seed 321 tera outra
+                       sequencia 23 - 12 - 32 - 01... e assim por diante*/          
 }
 
 // Sorteia os números sem repetição e salva no vetor passado por referência
 void sortear_numeros(int *sorteados)
 {
     int i = 0;
-    while(i < QTD_NUMEROS)
+    while(i < QTD_NUMEROS) // enquanto i < 5 faz:
     {
-        int num = ((rand() % NUM_MAX) + NUM_MIN);
+        int num = ((rand() % NUM_MAX) + NUM_MIN); 
         int repetido = 0;
 
-        // Verifica se o número já foi sorteado nesta rodada
+    // Verifica se o numero salvo em "num" ja esta presente no vetor "sorteados"
         for(int j = 0; j < i; j++)
         {
             if(sorteados[j] == num)
@@ -28,7 +32,7 @@ void sortear_numeros(int *sorteados)
             }
         }
 
-        // Se for inédito, salva no vetor e avança o índice
+        // Caso repetido = 0, significa que o numero nao foi sorteado ainda, logo:
         if(!repetido)
         {
             sorteados[i] = num;

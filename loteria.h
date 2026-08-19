@@ -18,3 +18,5 @@ void inicializador_gerador();
 void sortear_numeros(int *sorteados);
 Aposta* criar_aposta(int client_socket, int qtd_numeros);
 void liberar_aposta(Aposta *aposta);
+
+#endif
