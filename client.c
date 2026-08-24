@@ -1,95 +1,96 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <locale.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
-#include "client.h"
-#include "loteria.h"
+#define PORT 8080
+#define SERVER_IP "127.0.0.1"
+#define BUFFER_SIZE 1024
 
+// -------------------------------------------------------------
+// THREAD 1: Lê comandos/apostas do teclado e envia para o Server
+// -------------------------------------------------------------
+void* thread_enviar(void *arg) {
+    int sock_fd = *(int*)arg;
+    char buffer[BUFFER_SIZE];
 
-// Função que lê os números do teclado garantindo que são válidos e sem repetição
-void ler_aposta_usuario(int *aposta) 
-{
-    printf("!!MINI-SENA!!\n");
-    printf("Digite %d numeros entre %d e %d:\n\n", QTD_NUMEROS, NUM_MIN, NUM_MAX);
+    while (1) {
+        // Lê a linha inteira digitada pelo usuário no terminal
+        if (fgets(buffer, sizeof(buffer), stdin) != NULL) {
+            // Se o usuário apertar apenas Enter vazio, ignora
+            if (strcmp(buffer, "\n") == 0) continue;
 
-    for (int i = 0; i < QTD_NUMEROS; i++) 
-    {
-        int numero;
-        int valido = 0;
-
-        // Repete até o usuário digitar um número correto para a posição 'i'
-        while (!valido) 
-        {
-            printf("Digite o %dº numero: ", i + 1);
-            if (scanf("%d", &numero) != 1) 
-            {
-                // Limpa o buffer caso o usuário digite letras ou caracteres inválidos
-                while (getchar() != '\n');
-                printf("Entrada invalida! Digite apenas numeros inteiros.\n");
-                continue;
-            }
-
-            // 1. Checa se o número está dentro do intervalo permitido
-            if (numero < NUM_MIN || numero > NUM_MAX) 
-            {
-                printf("Erro: O numero deve estar entre %d e %d!\n", NUM_MIN, NUM_MAX);
-                continue;
-            }
-
-            // 2. Checa se o número já foi digitado anteriormente no mesmo bilhete
-            int repetido = 0;
-            for (int j = 0; j < i; j++) 
-            {
-                if (aposta[j] == numero) 
-                {
-                    repetido = 1;
-                    break;
-                }
-            }
-
-            if (repetido) 
-            {
-                printf("Erro: Voce ja digitou o numero %d! Escolha outro.\n", numero);
-                continue;
-            }
-
-            // Se passou por todas as checagens, o número é válido
-            aposta[i] = numero;
-            valido = 1;
+            // Envia o texto pela rede para o Servidor
+            send(sock_fd, buffer, strlen(buffer), 0);
         }
     }
-
-    printf("\n Aposta preenchida com sucesso!\n");
+    return NULL;
 }
 
-int main() 
-{
-    setlocale(LC_ALL, "Portuguese");
+// -------------------------------------------------------------
+// THREAD 2: Escuta respostas do Servidor e imprime na tela
+// -------------------------------------------------------------
+void* thread_receber(void *arg) {
+    int sock_fd = *(int*)arg;
+    char buffer[BUFFER_SIZE];
 
-    int minha_aposta[QTD_NUMEROS];
-    int sorteados[QTD_NUMEROS];
+    while (1) {
+        memset(buffer, 0, sizeof(buffer));
+        int bytes = recv(sock_fd, buffer, sizeof(buffer) - 1, 0);
 
-    //Testando a leitura da aposta
-    ler_aposta_usuario(minha_aposta);
+        // Se o servidor fechou a conexão ou deu erro
+        if (bytes <= 0) {
+            printf("\n[Cliente] Conexão com o servidor encerrada.\n");
+            exit(0);
+        }
 
-    //Exibe os números escolhidos pelo usuario
-    printf("\nSua aposta foi: ");
-    for (int i = 0; i < QTD_NUMEROS; i++) 
-    {
-        printf("[%d] ", minha_aposta[i]);
+        // Imprime a mensagem vinda do servidor na tela
+        printf("%s", buffer);
+        fflush(stdout);
     }
-    printf("\n");
+    return NULL;
+}
 
-    //Sorteia os números da loteria para teste
-    inicializador_gerador();
-    sortear_numeros(sorteados);
+// -------------------------------------------------------------
+// MAIN: Cria o Socket, Conecta e dispara as 2 Threads
+// -------------------------------------------------------------
+int main() {
+    int sock_fd;
+    struct sockaddr_in server_addr;
+    pthread_t t_envio, t_recepcao;
 
-    printf("Numeros sorteados: ");
-    for (int i = 0; i < QTD_NUMEROS; i++) 
-    {
-        printf("[%d] ", sorteados[i]);
+    // 1. Criação do Socket TCP
+    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        perror("Erro ao criar socket");
+        return 1;
     }
-    printf("\n\n");
 
+    // 2. Configuração do IP e Porta de Destino
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
+
+    printf("Conectando ao servidor em %s:%d...\n", SERVER_IP, PORT);
+
+    // 3. Conexão com o Servidor (TCP Handshake)
+    if (connect(sock_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Erro ao conectar no servidor");
+        close(sock_fd);
+        return 1;
+    }
+
+    // 4. Criação das 2 Threads independentes exigidas no diagrama
+    pthread_create(&t_recepcao, NULL, thread_receber, (void*)&sock_fd);
+    pthread_create(&t_envio, NULL, thread_enviar, (void*)&sock_fd);
+
+    // Aguarda as threads finalizarem
+    pthread_join(t_recepcao, NULL);
+    pthread_join(t_envio, NULL);
+
+    close(sock_fd);
     return 0;
 }
