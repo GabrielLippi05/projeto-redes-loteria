@@ -10,6 +10,7 @@
 #define SERVER_IP "127.0.0.1"
 #define BUFFER_SIZE 1024
 
+
 // -------------------------------------------------------------
 // THREAD 1: Lê comandos/apostas do teclado e envia para o Server
 // -------------------------------------------------------------

@@ -24,8 +24,15 @@ int cfg_inicio = NUM_MIN_PADRAO;     // Limite inferior do intervalo (padrão: 0
 int cfg_fim = NUM_MAX_PADRAO;        // Limite superior do intervalo (padrão: 100)
 int cfg_qtd = QTD_NUMEROS_PADRAO;    // Quantidade de números por bilhete (padrão: 5)
 
-// Ponteiro global que guarda a aposta ativa do usuário
-Aposta *aposta_atual = NULL;
+// Nó da lista encadeada — permite múltiplas apostas por rodada
+typedef struct ApostaNode {
+    Aposta *aposta;
+    struct ApostaNode *proximo;
+} ApostaNode;
+
+// Cabeca da lista de apostas da rodada atual:
+ApostaNode *lista_apostas = NULL;
+
 
 // =============================================================================
 // THREAD 1: RECEPTOR DE DADOS (Leitura contínua do Socket)
@@ -106,23 +113,64 @@ void* thread_receptor(void *arg) {
                 continue; // Volta para o início do loop sem salvar a aposta
             }
 
-            // --- REGIÃO CRÍTICA (Escrita na memória compartilhada com Mutex) ---
-            pthread_mutex_lock(&lock_memoria); // Tranca o acesso exclusivo
-
-            // Se já existia uma aposta anterior da rodada atual, desaloca a antiga
-            if (aposta_atual != NULL) {
-                liberar_aposta(aposta_atual);
+            // Valida se todos os números estão dentro do intervalo [cfg_inicio, cfg_fim]
+            int fora_do_intervalo = 0;
+            for (int i = 0; i < contador; i++) {
+                if (numeros_lidos[i] < cfg_inicio || numeros_lidos[i] > cfg_fim) {
+                    fora_do_intervalo = 1;
+                    break;
+                }
+            }
+            if (fora_do_intervalo) {
+                char aviso_erro[BUFFER_SIZE];
+                snprintf(aviso_erro, sizeof(aviso_erro), "[Erro] Os numeros devem estar entre %d e %d!\n", cfg_inicio, cfg_fim);
+                send(client_socket, aviso_erro, strlen(aviso_erro), 0);
+                continue; // Volta para o início do loop sem salvar a aposta
             }
 
-            // Aloca a nova aposta dinamicamente com base na quantidade configurada
-            aposta_atual = criar_aposta(client_socket, cfg_qtd);
-            if (aposta_atual != NULL) {
-                for (int i = 0; i < cfg_qtd; i++) {
-                    aposta_atual->numeros_aposta[i] = numeros_lidos[i];
+            // Valida se há números repetidos dentro da mesma aposta
+            int tem_repetido = 0;
+            for (int i = 0; i < contador && !tem_repetido; i++) {
+                for (int j = i + 1; j < contador; j++) {
+                    if (numeros_lidos[i] == numeros_lidos[j]) {
+                        tem_repetido = 1;
+                        break;
+                    }
+                }
+            }
+            if (tem_repetido) {
+                char aviso_erro[BUFFER_SIZE];
+                snprintf(aviso_erro, sizeof(aviso_erro), "[Erro] A aposta nao pode ter numeros repetidos!\n");
+                send(client_socket, aviso_erro, strlen(aviso_erro), 0);
+                continue; // Volta para o início do loop sem salvar a aposta
+            }
+
+//-----------------------------------------------------------------------------------------------------------------------------------
+
+            // --- REGIÃO CRÍTICA (Escrita na memória compartilhada com Mutex) ---
+            pthread_mutex_lock(&lock_memoria);
+
+            Aposta *nova_aposta = criar_aposta(client_socket, cfg_qtd);
+            if (nova_aposta != NULL) 
+            {
+                for (int i = 0; i < cfg_qtd; i++) 
+                {
+                    nova_aposta->numeros_aposta[i] = numeros_lidos[i];
+                }
+
+                // Cria o nó e insere no início da lista (não sobrescreve mais as anteriores)
+                ApostaNode *novo_no = (ApostaNode*)malloc(sizeof(ApostaNode));
+                if (novo_no != NULL) 
+                {
+                    novo_no->aposta = nova_aposta;
+                    novo_no->proximo = lista_apostas;
+                    lista_apostas = novo_no;
                 }
             }
 
-            pthread_mutex_unlock(&lock_memoria); // Destranca o acesso
+            pthread_mutex_unlock(&lock_memoria);
+           
+//----------------------------------------------------------------------------------------------------------------------------------
 
             char *msg_sucesso = "[Banca] Aposta registrada com sucesso! Aguarde o sorteio da rodada.\n";
             send(client_socket, msg_sucesso, strlen(msg_sucesso), 0);
@@ -182,43 +230,61 @@ void* thread_temporizador(void *arg) {
         }
         strncat(relatorio, "\n", sizeof(relatorio) - strlen(relatorio) - 1);
 
+//-----------------------------------------------------------------------------------------------------------------------
         // --- REGIÃO CRÍTICA (Leitura e limpeza da memória compartilhada) ---
-        pthread_mutex_lock(&lock_memoria); // Tranca a memória contra alterações da Thread 1
+        pthread_mutex_lock(&lock_memoria);
 
-        // Caso o usuário tenha realizado uma aposta antes do sorteio
-        if (aposta_atual != NULL) {
-            int total_acertos = 0;
-            char acertos_str[BUFFER_SIZE] = "Numeros que voce acertou: ";
+        if (lista_apostas != NULL) 
+        {
+            ApostaNode *atual = lista_apostas;
+            int numero_aposta = 1;
 
-            // Compara os números da aposta com o vetor de números sorteados
-            for (int u = 0; u < aposta_atual->qtd_numeros; u++) {
-                for (int s = 0; s < cfg_qtd; s++) {
-                    if (aposta_atual->numeros_aposta[u] == sorteados[s]) {
-                        total_acertos++;
-                        snprintf(temp, sizeof(temp), "[%d] ", aposta_atual->numeros_aposta[u]);
-                        strncat(acertos_str, temp, sizeof(acertos_str) - strlen(acertos_str) - 1);
+            while (atual != NULL) 
+            {
+                Aposta *ap = atual->aposta;
+                int total_acertos = 0;
+
+                // Monta a linha "aposta: a b c d e"
+                char linha_aposta[BUFFER_SIZE] = "";
+                snprintf(temp, sizeof(temp), "Aposta %d: ", numero_aposta);
+                strncat(linha_aposta, temp, sizeof(linha_aposta) - strlen(linha_aposta) - 1);
+
+                for (int u = 0; u < ap->qtd_numeros; u++) 
+                {
+                    snprintf(temp, sizeof(temp), "[%d] ", ap->numeros_aposta[u]);
+                    strncat(linha_aposta, temp, sizeof(linha_aposta) - strlen(linha_aposta) - 1);
+
+                    for (int s = 0; s < cfg_qtd; s++) 
+                    {
+                        if (ap->numeros_aposta[u] == sorteados[s]) {
+                            total_acertos++;
+                            break;
+                        }
                     }
                 }
+
+                strncat(relatorio, linha_aposta, sizeof(relatorio) - strlen(relatorio) - 1);
+                snprintf(temp, sizeof(temp), "\nAcertos: %d\n\n", total_acertos);
+                strncat(relatorio, temp, sizeof(relatorio) - strlen(relatorio) - 1);
+
+                // Avança e libera o nó já conferido
+                ApostaNode *proximo = atual->proximo;
+                liberar_aposta(atual->aposta);
+                free(atual);
+                atual = proximo;
+                numero_aposta++;
             }
 
-            if (total_acertos == 0) {
-                strncat(acertos_str, "Nenhum", sizeof(acertos_str) - strlen(acertos_str) - 1);
-            }
-
-            snprintf(temp, sizeof(temp), "\nTotal de acertos: %d\n====================================================\n\n", total_acertos);
-            strncat(relatorio, acertos_str, sizeof(relatorio) - strlen(relatorio) - 1);
-            strncat(relatorio, temp, sizeof(relatorio) - strlen(relatorio) - 1);
-
-            // Libera a memória da aposta conferida e zera o ponteiro para o próximo minuto
-            liberar_aposta(aposta_atual);
-            aposta_atual = NULL;
-        } 
-        // Caso o minuto tenha passado sem nenhuma aposta registrada
-        else {
+            strncat(relatorio, "====================================================\n\n", sizeof(relatorio) - strlen(relatorio) - 1);
+            lista_apostas = NULL; // zera a lista para a próxima rodada
+        }
+        else 
+        {
             strncat(relatorio, "Voce nao realizou nenhuma aposta nesta rodada.\n====================================================\n\n", sizeof(relatorio) - strlen(relatorio) - 1);
         }
 
-        pthread_mutex_unlock(&lock_memoria); // Destranca a memória compartilhada
+        pthread_mutex_unlock(&lock_memoria);
+//-----------------------------------------------------------------------------------------------------------------------
 
         // Envia o boletim completo com o sorteio e conferência para o cliente
         send(client_socket, relatorio, strlen(relatorio), 0);
