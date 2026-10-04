@@ -10,6 +10,9 @@ void inicializador_gerador(void) {
 
 // Aloca dinamicamente a struct e o vetor de números da aposta
 Aposta* criar_aposta(int client_socket, int qtd_numeros) {
+    // Sem numeros nao ha aposta; malloc(0) poderia devolver ponteiro ambiguo
+    if (qtd_numeros < 1) return NULL;
+
     Aposta *nova_aposta = (Aposta*)malloc(sizeof(Aposta));
     if (nova_aposta == NULL) {
         perror("Erro ao alocar Aposta");
@@ -37,4 +40,4 @@ void liberar_aposta(Aposta *aposta) {
         }
         free(aposta);
     }
-}
+}
